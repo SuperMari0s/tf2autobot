@@ -19,7 +19,6 @@ import path from 'path';
 import * as files from '../lib/files';
 import * as readline from 'readline';
 
-
 import jwt from 'jsonwebtoken';
 import DiscordBot from './DiscordBot';
 import { Message as DiscordMessage } from 'discord.js';
@@ -35,6 +34,8 @@ import InventoryGetter from './InventoryGetter';
 import BotManager from './BotManager';
 import MyHandler from './MyHandler/MyHandler';
 import Groups from './Groups';
+import ClassifiedsCacheManager from './ClassifiedsCacheManager';
+import SniperManager from './SniperManager';
 
 import log from '../lib/logger';
 import Bans, { IsBanned } from '../lib/bans';
@@ -82,6 +83,10 @@ export default class Bot {
     readonly tf2gc: TF2GC;
 
     readonly handler: MyHandler;
+
+    readonly classifiedsCache: ClassifiedsCacheManager;
+
+    readonly sniperManager: SniperManager;
 
     readonly inventoryGetter: InventoryGetter;
 
@@ -204,6 +209,9 @@ export default class Bot {
         this.tf2gc = new TF2GC(this);
 
         this.handler = new MyHandler(this, this.priceSource);
+
+        this.classifiedsCache = new ClassifiedsCacheManager(this);
+        this.sniperManager = new SniperManager(this);
 
         this.admins = [];
 
@@ -865,7 +873,17 @@ export default class Bot {
 
         this.addListener(this.manager, 'pollData', this.handler.onPollData.bind(this.handler), false);
         this.addListener(this.manager, 'newOffer', this.trades.onNewOffer.bind(this.trades), true);
-        this.addListener(this.manager, 'sentOfferChanged', this.trades.onOfferChanged.bind(this.trades), true);
+        this.addListener(
+            this.manager,
+            'sentOfferChanged',
+            (offer: TradeOfferManager.TradeOffer, oldState: number) => {
+                this.trades.onOfferChanged(offer, oldState);
+                if (offer.state === TradeOfferManager.ETradeOfferState['Accepted'] && offer.isOurOffer) {
+                    void this.sniperManager.handleAcceptedOffer(offer);
+                }
+            },
+            true
+        );
         this.addListener(this.manager, 'receivedOfferChanged', this.trades.onOfferChanged.bind(this.trades), true);
         this.addListener(this.manager, 'offerList', this.trades.onOfferList.bind(this.trades), true);
 
@@ -1214,6 +1232,9 @@ export default class Bot {
 
                     this.manager.pollInterval = 5 * 1000;
                     this.setReady = true;
+                    void this.classifiedsCache.initCache().then(() => {
+                        this.classifiedsCache.startStream();
+                    });
                     this.handler.onReady();
                     this.manager.doPoll();
                     this.startVersionChecker();
@@ -1612,7 +1633,11 @@ export default class Bot {
         log.debug('Conf key needed');
 
         if (!this.options.steamIdentitySecret || this.options.steamIdentitySecret === 'X') {
-            return callback(new Error('Manual 2FA mode: No identity secret provided, skipping automatic confirmation.'), 0, '');
+            return callback(
+                new Error('Manual 2FA mode: No identity secret provided, skipping automatic confirmation.'),
+                0,
+                ''
+            );
         }
 
         void this.getTimeOffset.asCallback((err, offset) => {
@@ -1647,17 +1672,22 @@ export default class Bot {
             .then(async () => {
                 if (!this.options.steamSharedSecret || this.options.steamSharedSecret === 'X') {
                     // Manual input or Mobile Approval
-                    log.warn('A login confirmation has been sent to your Steam mobile app. Please approve it on your device.');
-                    return new Promise<string>((resolve) => {
+                    log.warn(
+                        'A login confirmation has been sent to your Steam mobile app. Please approve it on your device.'
+                    );
+                    return new Promise<string>(resolve => {
                         const rl = readline.createInterface({
                             input: process.stdin,
                             output: process.stdout
                         });
-                        
-                        rl.question('If you are using a code instead, enter it here (otherwise just approve on phone): ', (code) => {
-                            rl.close();
-                            resolve(code.trim());
-                        });
+
+                        rl.question(
+                            'If you are using a code instead, enter it here (otherwise just approve on phone): ',
+                            code => {
+                                rl.close();
+                                resolve(code.trim());
+                            }
+                        );
 
                         // Automatically close the prompt if the user approves on their phone
                         const onDone = () => {

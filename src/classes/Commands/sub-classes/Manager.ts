@@ -1016,4 +1016,23 @@ export default class ManagerCommands {
             })
             .catch(err => this.bot.sendMessage(steamID, `❌ Failed to check for updates: ${JSON.stringify(err)}`));
     }
+
+    sniperCommand(steamID: SteamID, message: string): void {
+        const parts = message.split(' ');
+        const subcommand = parts[1]?.toLowerCase();
+
+        if (subcommand === 'on') {
+            this.bot.options.sniper.enable = true;
+            this.bot.sendMessage(steamID, '✅ Sniper engine enabled.');
+        } else if (subcommand === 'off') {
+            this.bot.options.sniper.enable = false;
+            this.bot.sendMessage(steamID, '❌ Sniper engine disabled.');
+        } else if (subcommand === 'status') {
+            const status = this.bot.options.sniper.enable ? 'enabled' : 'disabled';
+            const minProfit = this.bot.options.sniper.minProfit || 0.33;
+            this.bot.sendMessage(steamID, `Sniper engine is currently ${status}. Minimum profit: ${minProfit} ref.`);
+        } else {
+            this.bot.sendMessage(steamID, '❌ Invalid subcommand. Use: sniper <on|off|status>');
+        }
+    }
 }

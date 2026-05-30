@@ -663,6 +663,11 @@ export const DEFAULTS: JsonOptions = {
         clearFriends: ''
     },
 
+    sniper: {
+        enable: false,
+        minProfit: 0.33
+    },
+
     commands: {
         enable: true,
         customDisableReply: '',
@@ -1980,6 +1985,12 @@ interface HaveOrNo {
     have?: string;
 }
 
+// ------------ Sniper ------------
+
+interface Sniper extends OnlyEnable {
+    minProfit?: number;
+}
+
 // ------------ Extra Details -----------
 
 interface DetailsExtra {
@@ -2187,6 +2198,7 @@ export interface JsonOptions {
     discordWebhook?: DiscordWebhook;
     customMessage?: CustomMessage;
     commands?: Commands;
+    sniper?: Sniper;
     detailsExtra?: DetailsExtra;
 }
 
