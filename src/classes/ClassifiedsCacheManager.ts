@@ -37,9 +37,9 @@ export default class ClassifiedsCacheManager {
 
         log.info('Downloading backpack.tf market snapshot...');
         try {
-            const response = await axios.get('https://backpack.tf/api/classifieds/listings/snapshot/v1', {
+            const response = await axios.get('https://api.backpack.tf/api/v2/classifieds/listings/snapshot', {
                 params: {
-                    key: this.bot.options.bptfApiKey,
+                    token: this.bot.options.bptfAccessToken,
                     appid: 440
                 }
             });
@@ -100,7 +100,7 @@ export default class ClassifiedsCacheManager {
     }
 
     startStream(): void {
-        this.ws = new WebSocket('wss://ws.backpack.tf');
+        this.ws = new WebSocket(`wss://ws.backpack.tf/messages?token=${this.bot.options.bptfAccessToken}`);
 
         this.ws.on('open', () => {
             log.info('Connected to backpack.tf WebSocket stream.');

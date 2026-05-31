@@ -213,7 +213,7 @@ export default class SniperManager {
         log.info(`[SNIPER] Relisting ${sku} (AssetID: ${newAssetId}) for ${sellPrice.toString()}...`);
 
         try {
-            await axios.post('https://backpack.tf/api/classifieds/listings/v1', {
+            await axios.post('https://api.backpack.tf/api/v2/classifieds/listings', {
                 token: this.bot.options.bptfAccessToken,
                 listings: [
                     {
