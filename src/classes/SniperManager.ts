@@ -213,19 +213,26 @@ export default class SniperManager {
         log.info(`[SNIPER] Relisting ${sku} (AssetID: ${newAssetId}) for ${sellPrice.toString()}...`);
 
         try {
-            await axios.post('https://api.backpack.tf/api/v2/classifieds/listings', {
-                token: this.bot.options.bptfAccessToken,
-                listings: [
-                    {
-                        intent: 1,
-                        id: newAssetId,
-                        currencies: sellPrice.toJSON(),
-                        details: this.bot.options.details.sell
-                            .replace('%name%', sku)
-                            .replace('%price%', sellPrice.toString())
+            await axios.post(
+                'https://api.backpack.tf/api/v2/classifieds/listings',
+                {
+                    listings: [
+                        {
+                            intent: 1,
+                            id: newAssetId,
+                            currencies: sellPrice.toJSON(),
+                            details: this.bot.options.details.sell
+                                .replace('%name%', sku)
+                                .replace('%price%', sellPrice.toString())
+                        }
+                    ]
+                },
+                {
+                    headers: {
+                        'X-Auth-Token': this.bot.options.bptfAccessToken
                     }
-                ]
-            });
+                }
+            );
             log.info(`[SNIPER PROVED] Item ${sku} bought for X, now listed for Y! Profit window secured.`);
         } catch (err) {
             log.error(`[SNIPER] Failed to relist ${sku}:`, err);

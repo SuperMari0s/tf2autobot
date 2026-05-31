@@ -41,6 +41,9 @@ export default class ClassifiedsCacheManager {
                 params: {
                     token: this.bot.options.bptfAccessToken,
                     appid: 440
+                },
+                headers: {
+                    'X-Auth-Token': this.bot.options.bptfAccessToken
                 }
             });
 
@@ -100,7 +103,7 @@ export default class ClassifiedsCacheManager {
     }
 
     startStream(): void {
-        this.ws = new WebSocket(`wss://ws.backpack.tf/messages?token=${this.bot.options.bptfAccessToken}`);
+        this.ws = new WebSocket(`wss://ws.backpack.tf?token=${this.bot.options.bptfAccessToken}`);
 
         this.ws.on('open', () => {
             log.info('Connected to backpack.tf WebSocket stream.');
