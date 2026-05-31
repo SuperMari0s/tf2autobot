@@ -1,3 +1,4 @@
+import axios from 'axios';
 import SteamID from 'steamid';
 import Bot from './Bot';
 import log from '../lib/logger';
@@ -6,17 +7,7 @@ import Currencies from '@tf2autobot/tf2-currencies';
 import SKU from '@tf2autobot/tf2-sku';
 import UserCart from './Carts/UserCart';
 import { ParsedPrice } from './Pricelist';
-
-interface ClassifiedsSearchResponse {
-    buy: {
-        total: number;
-        listings: ClassifiedListing[];
-    };
-    sell: {
-        total: number;
-        listings: ClassifiedListing[];
-    };
-}
+import { testPriceKey } from '../lib/tools/export';
 
 interface ClassifiedListing {
     id: string;
@@ -26,194 +17,221 @@ interface ClassifiedListing {
         keys: number;
         metal: number;
     };
-    item: {
-        id?: string;
-        defindex: number;
-        quality: number;
-        attributes: any[];
-    };
+    item: any;
     intent: number;
     userAgent?: string;
 }
 
 export default class AutoTrade {
-    private autoTradeTimeout: NodeJS.Timeout;
+    private snapshotTimeout: NodeJS.Timeout;
 
-    private sniperTimeout: NodeJS.Timeout;
+    private sniperSkus: Set<string> = new Set();
+
+    private lastSniperItemsConfig: string[] = [];
 
     constructor(private readonly bot: Bot) {}
 
     start(): void {
         this.stop();
-        this.planAutoTrade();
-        this.planSniper();
+        this.planSnapshot();
     }
 
     stop(): void {
-        clearTimeout(this.autoTradeTimeout);
-        clearTimeout(this.sniperTimeout);
+        clearTimeout(this.snapshotTimeout);
     }
 
-    private planAutoTrade(): void {
-        const { minInterval, maxInterval, enable } = this.bot.options.autoTrade;
-        if (!enable) return;
+    private planSnapshot(): void {
+        const { minInterval, maxInterval, enable: autoTradeEnable } = this.bot.options.autoTrade;
+        const { enable: sniperEnable } = this.bot.options.sniper;
 
+        if (!autoTradeEnable && !sniperEnable) return;
+
+        // Use the AutoTrade interval for the snapshot frequency
         const interval = Math.floor(Math.random() * (maxInterval - minInterval + 1) + minInterval) * 60 * 1000;
-        this.autoTradeTimeout = setTimeout(() => {
-            void this.checkAutoTrade().finally(() => this.planAutoTrade());
+        this.snapshotTimeout = setTimeout(() => {
+            void this.checkOpportunities().finally(() => this.planSnapshot());
         }, interval);
     }
 
-    private planSniper(): void {
-        const { enable } = this.bot.options.sniper;
-        if (!enable) return;
+    private async updateSniperSkus(): Promise<void> {
+        const currentItems = this.bot.options.sniper.items || [];
+        if (JSON.stringify(currentItems) === JSON.stringify(this.lastSniperItemsConfig)) return;
 
-        // Sniper runs more frequently, e.g., every 2 minutes
-        this.sniperTimeout = setTimeout(
-            () => {
-                void this.checkSniper().finally(() => this.planSniper());
-            },
-            2 * 60 * 1000
-        );
+        this.sniperSkus.clear();
+        for (const item of currentItems) {
+            if (testPriceKey(item)) {
+                this.sniperSkus.add(item);
+            } else {
+                const sku = this.bot.schema.getSkuFromName(item);
+                if (!sku.includes('null') && !sku.includes('undefined')) this.sniperSkus.add(sku);
+            }
+        }
+        this.lastSniperItemsConfig = [...currentItems];
     }
 
-    private async checkAutoTrade(): Promise<void> {
+    private async checkOpportunities(): Promise<void> {
         if (this.bot.isHalted) return;
-        log.debug('Checking for auto-trade opportunities...');
 
-        const inventory = this.bot.inventoryManager.getInventory;
-        const pricelist = this.bot.pricelist.getPrices;
+        const autoTradeEnabled = this.bot.options.autoTrade.enable;
+        const sniperEnabled = this.bot.options.sniper.enable;
 
-        for (const sku in pricelist) {
-            if (!Object.prototype.hasOwnProperty.call(pricelist, sku)) continue;
-            const entry = pricelist[sku];
-            if (!entry.enabled || entry.intent === 0) continue;
+        if (!autoTradeEnabled && !sniperEnabled) return;
 
-            const amountInStock = inventory.getAmount({
-                priceKey: sku,
-                includeNonNormalized: false,
-                tradableOnly: true
+        log.debug('Checking opportunities via classifieds snapshot...');
+
+        try {
+            const snapshotUrl = await this.getSnapshotUrl();
+            const response = await axios.get(snapshotUrl, {
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+                responseType: 'json',
+                timeout: 60000
             });
-            if (amountInStock <= 0) continue;
 
-            try {
-                const opportunities = await this.searchClassifieds(sku);
-                if (!opportunities.buy || !opportunities.buy.listings) continue;
+            const listings = response.data.listings;
+            if (!listings || !Array.isArray(listings)) return;
 
-                for (const listing of opportunities.buy.listings) {
-                    if (listing.steamid === this.bot.client.steamID.getSteamID64()) continue;
+            log.debug(`Fetched snapshot with ${listings.length} listings.`);
 
-                    const listingPrice = new Currencies(listing.currencies);
-                    const keyPrice = this.bot.pricelist.getKeyPrice.metal;
+            await this.updateSniperSkus();
+            const pricelist = this.bot.pricelist.getPrices;
+            const inventory = this.bot.inventoryManager.getInventory;
+            const keyPrice = this.bot.pricelist.getKeyPrice.metal;
+            const sniperMinProfit = this.bot.options.sniper.minProfit || 0.33;
 
-                    if (listingPrice.toValue(keyPrice) >= entry.sell.toValue(keyPrice)) {
-                        log.info(`Found matching buy order for ${entry.name} from ${listing.steamid}`);
-                        await this.sendOffer(listing.steamid, sku, 'selling');
-                        break; // Only send one offer per item per cycle to be safe
-                    }
-                }
-                // Rate limit spacing
-                await new Promise(resolve => setTimeout(resolve, 5000));
-            } catch (err) {
-                log.error(`Error searching classifieds for ${sku}:`, err);
-            }
-        }
-    }
+            const potentialTrades: Map<string, { sku: string; intent: 'buying' | 'selling' }[]> = new Map();
+            const suggestedValueCache: Map<string, ParsedPrice | null> = new Map();
 
-    private async checkSniper(): Promise<void> {
-        if (this.bot.isHalted) return;
-        log.debug('Checking for sniping opportunities...');
+            for (const listing of listings) {
+                if (listing.steamid === this.bot.client.steamID.getSteamID64()) continue;
 
-        const { items, minProfit } = this.bot.options.sniper;
-        if (!items || items.length === 0) return;
+                const mightBeTarget =
+                    (autoTradeEnabled && listing.intent === 0) || (sniperEnabled && listing.intent === 1);
 
-        for (const itemQuery of items) {
-            try {
-                let sku: string;
-                let name: string;
+                if (!mightBeTarget) continue;
 
-                if (/^[0-9]+;[0-9]+/.test(itemQuery)) {
-                    sku = itemQuery;
-                    name = this.bot.schema.getName(SKU.fromString(sku), false);
-                } else {
-                    sku = this.bot.schema.getSkuFromName(itemQuery);
-                    name = itemQuery;
-                }
+                const sku = SKU.fromObject(listing.item);
+                const listingPrice = new Currencies(listing.currencies);
 
-                if (sku.includes('null') || sku.includes('undefined')) {
-                    log.warn(`Sniper: Could not find SKU for ${itemQuery}`);
-                    continue;
-                }
-
-                const targetSku = sku;
-                const opportunities = await this.searchClassifieds(targetSku);
-                const suggestedValue = await this.bot.pricelist.getItemPrices(targetSku);
-                if (!suggestedValue || !suggestedValue.sell) continue;
-
-                if (!opportunities.sell || !opportunities.sell.listings) continue;
-
-                const keyPrice = this.bot.pricelist.getKeyPrice.metal;
-                const suggestedSellValue = suggestedValue.sell.toValue(keyPrice);
-
-                for (const listing of opportunities.sell.listings) {
-                    if (listing.steamid === this.bot.client.steamID.getSteamID64()) continue;
-
-                    const listingPrice = new Currencies(listing.currencies);
-                    const listingValue = listingPrice.toValue(keyPrice);
-                    const profit = (suggestedSellValue - listingValue) / 9; // in refined
-
-                    if (profit >= minProfit) {
-                        log.info(`Found deal for ${name}: ${profit.toFixed(2)} ref profit!`);
-                        if (this.canAfford(listingPrice)) {
-                            await this.sendOffer(listing.steamid, targetSku, 'buying');
-                            // After buying, we might want to add it to pricelist
-                            this.autoResell(targetSku, suggestedValue);
-                        } else {
-                            log.debug(`Cannot afford deal for ${name}`);
+                if (listing.intent === 0 && autoTradeEnabled) {
+                    const entry = pricelist[sku];
+                    if (entry && entry.enabled && entry.intent !== 0) {
+                        const amountInStock = inventory.getAmount({
+                            priceKey: sku,
+                            includeNonNormalized: false,
+                            tradableOnly: true
+                        });
+                        if (amountInStock > 0 && listingPrice.toValue(keyPrice) >= entry.sell.toValue(keyPrice)) {
+                            this.addPotentialTrade(potentialTrades, listing.steamid, sku, 'selling');
                         }
-                        break; // Only one deal per item type per cycle
+                    }
+                } else if (listing.intent === 1 && sniperEnabled && this.sniperSkus.has(sku)) {
+                    let suggestedValue = suggestedValueCache.get(sku);
+                    if (suggestedValue === undefined) {
+                        suggestedValue = await this.bot.pricelist.getItemPrices(sku);
+                        suggestedValueCache.set(sku, suggestedValue);
+                    }
+
+                    if (suggestedValue && suggestedValue.sell) {
+                        const listingValue = listingPrice.toValue(keyPrice);
+                        const suggestedSellValue = suggestedValue.sell.toValue(keyPrice);
+                        const profit = (suggestedSellValue - listingValue) / 9;
+
+                        if (profit >= sniperMinProfit && this.canAfford(listingPrice)) {
+                            this.addPotentialTrade(potentialTrades, listing.steamid, sku, 'buying');
+                        }
                     }
                 }
-                // Rate limit spacing
-                await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+
+            if (potentialTrades.size > 0) {
+                log.info(`Found ${potentialTrades.size} potential partners. Fetching trade URLs...`);
+                await this.processPotentialTrades(potentialTrades);
+            }
+        } catch (err) {
+            log.error('Error in AutoTrade/Sniper cycle:', err);
+        }
+    }
+
+    private addPotentialTrade(
+        map: Map<string, { sku: string; intent: 'buying' | 'selling' }[]>,
+        steamid: string,
+        sku: string,
+        intent: 'buying' | 'selling'
+    ): void {
+        const existing = map.get(steamid) || [];
+        if (existing.some(e => e.sku === sku && e.intent === intent)) return;
+        existing.push({ sku, intent });
+        map.set(steamid, existing);
+    }
+
+    private async getSnapshotUrl(): Promise<string> {
+        const response = await apiRequest<any>({
+            method: 'GET',
+            url: 'https://api.backpack.tf/api/classifieds/snapshot/v1',
+            params: {
+                key: this.bot.options.bptfApiKey,
+                appid: 440
+            }
+        });
+
+        if (!response || !response.url) {
+            throw new Error(`Failed to get snapshot URL: ${JSON.stringify(response)}`);
+        }
+
+        return response.url;
+    }
+
+    private async processPotentialTrades(
+        potentialTrades: Map<string, { sku: string; intent: 'buying' | 'selling' }[]>
+    ): Promise<void> {
+        const steamIDs = Array.from(potentialTrades.keys());
+        for (let i = 0; i < steamIDs.length; i += 100) {
+            const batch = steamIDs.slice(i, i + 100);
+            try {
+                const userInfo = await this.getUsersInfo(batch);
+                for (const steamID64 of batch) {
+                    const user = userInfo.users[steamID64];
+                    const tradeUrl = user?.tradeoffer_url;
+                    if (tradeUrl) {
+                        const trades = potentialTrades.get(steamID64);
+                        for (const trade of trades) {
+                            await this.sendOffer(steamID64, trade.sku, trade.intent, tradeUrl);
+                            await new Promise(resolve => setTimeout(resolve, 2000));
+                        }
+                    }
+                }
             } catch (err) {
-                log.error(`Error in sniper cycle for ${itemQuery}:`, err);
+                log.error('Error fetching user info for batch:', err);
             }
         }
     }
 
-    private async searchClassifieds(sku: string): Promise<ClassifiedsSearchResponse> {
-        const item = SKU.fromString(sku);
-        const params: Record<string, string | number> = {
-            key: this.bot.options.bptfApiKey,
-            item: this.bot.schema.getName(item, false),
-            quality: item.quality,
-            tradable: item.tradable ? 1 : 0,
-            craftable: item.craftable ? 1 : 0
-        };
-
-        if (item.effect) params.effect = item.effect;
-        if (item.australium) params.australium = 1;
-        if (item.wear) params.wear = item.wear;
-        if (item.paintkit) params.paintkit = item.paintkit;
-
-        return apiRequest<ClassifiedsSearchResponse>({
+    private async getUsersInfo(steamIDs: string[]): Promise<any> {
+        return apiRequest<any>({
             method: 'GET',
-            url: 'https://api.backpack.tf/api/classifieds/search/v1',
-            params
+            url: 'https://api.backpack.tf/api/users/info/v1',
+            params: {
+                key: this.bot.options.bptfApiKey,
+                steamids: steamIDs.join(',')
+            }
         });
     }
 
-    private async sendOffer(partnerSteamID: string, sku: string, intent: 'buying' | 'selling'): Promise<void> {
+    private async sendOffer(
+        partnerSteamID: string,
+        sku: string,
+        intent: 'buying' | 'selling',
+        tradeUrl: string
+    ): Promise<void> {
         const partner = new SteamID(partnerSteamID);
 
-        // Check for active offers to avoid duplicates
         if (this.bot.trades.getActiveOffer(partner) !== null) {
-            log.debug(`Already have an active offer with ${partnerSteamID}, skipping.`);
             return;
         }
 
-        const cart = new UserCart(partner, this.bot, this.bot.craftWeapons, this.bot.uncraftWeapons);
+        const token = new URL(tradeUrl).searchParams.get('token');
+        const cart = new UserCart(partner, token, this.bot, this.bot.craftWeapons, this.bot.uncraftWeapons);
 
         if (intent === 'selling') {
             cart.addOurItem(sku, 1);
@@ -222,12 +240,16 @@ export default class AutoTrade {
         }
 
         try {
-            const alteredMessage = await cart.constructOffer();
-            if (alteredMessage) {
-                log.warn(`Offer to ${partnerSteamID} was altered: ${alteredMessage}`);
-            }
+            await cart.constructOffer();
             await cart.sendOffer();
             log.info(`Sent offer to ${partnerSteamID} for ${sku} (${intent})`);
+
+            if (intent === 'buying') {
+                const suggestedValue = await this.bot.pricelist.getItemPrices(sku);
+                if (suggestedValue) {
+                    this.autoResell(sku, suggestedValue);
+                }
+            }
         } catch (err) {
             log.error(`Failed to send offer to ${partnerSteamID}:`, err);
         }
