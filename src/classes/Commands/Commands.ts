@@ -262,6 +262,8 @@ export default class Commands {
                 this.manager.refreshAutokeysCommand(steamID);
             } else if (command === 'refreshlist' && isAdmin) {
                 this.manager.refreshListingsCommand(steamID);
+            } else if (command === 'sniper' && isAdmin) {
+                this.manager.sniperCommand(steamID, message);
             } else if (command === 'stats' && isAdmin) {
                 void this.status.statsCommand(steamID);
             } else if (command === 'statsdw' && isAdmin) {

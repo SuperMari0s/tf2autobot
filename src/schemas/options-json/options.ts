@@ -2771,6 +2771,19 @@ export const optionsSchema: jsonschema.Schema = {
             },
             required: ['spells', 'sheens', 'killstreakers', 'painted', 'strangeParts'],
             additionalProperties: false
+        },
+        sniper: {
+            type: 'object',
+            properties: {
+                enable: {
+                    type: 'boolean'
+                },
+                minProfit: {
+                    type: 'number'
+                }
+            },
+            required: ['enable'],
+            additionalProperties: false
         }
     },
     required: [
