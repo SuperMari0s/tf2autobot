@@ -858,12 +858,14 @@ export const DEFAULTS: JsonOptions = {
 
     autoTrade: {
         enable: false,
-        minInterval: 5,
-        maxInterval: 10
+        minInterval: 15,
+        maxInterval: 30
     },
 
     sniper: {
         enable: false,
+        minInterval: 5,
+        maxInterval: 15,
         minProfit: 0.33,
         maxBudget: -1,
         items: []
@@ -1216,6 +1218,8 @@ interface AutoTrade {
 
 interface Sniper {
     enable?: boolean;
+    minInterval?: number;
+    maxInterval?: number;
     minProfit?: number;
     maxBudget?: number;
     items?: string[];

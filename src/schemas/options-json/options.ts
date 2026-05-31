@@ -2301,6 +2301,14 @@ export const optionsSchema: jsonschema.Schema = {
                 enable: {
                     type: 'boolean'
                 },
+                minInterval: {
+                    type: 'number',
+                    minimum: 1
+                },
+                maxInterval: {
+                    type: 'number',
+                    minimum: 1
+                },
                 minProfit: {
                     type: 'number',
                     minimum: 0
@@ -2312,7 +2320,7 @@ export const optionsSchema: jsonschema.Schema = {
                     $ref: '#/definitions/string-array'
                 }
             },
-            required: ['enable', 'minProfit', 'maxBudget', 'items'],
+            required: ['enable', 'minInterval', 'maxInterval', 'minProfit', 'maxBudget', 'items'],
             additionalProperties: false
         },
         detailsExtra: {
