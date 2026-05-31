@@ -856,6 +856,19 @@ export const DEFAULTS: JsonOptions = {
         }
     },
 
+    autoTrade: {
+        enable: false,
+        minInterval: 5,
+        maxInterval: 10
+    },
+
+    sniper: {
+        enable: false,
+        minProfit: 0.33,
+        maxBudget: -1,
+        items: []
+    },
+
     detailsExtra: {
         /**
          * Custom string to be shown in listing note if details.highValue.showSpells set to true
@@ -1189,6 +1202,23 @@ interface GlobalDisable {
     greeting?: boolean;
     commands?: boolean;
     adminCommands?: boolean;
+}
+
+// ------------ AutoTrade ------------
+
+interface AutoTrade {
+    enable?: boolean;
+    minInterval?: number;
+    maxInterval?: number;
+}
+
+// ------------ Sniper ------------
+
+interface Sniper {
+    enable?: boolean;
+    minProfit?: number;
+    maxBudget?: number;
+    items?: string[];
 }
 
 // ------------ SortType ------------
@@ -2188,6 +2218,8 @@ export interface JsonOptions {
     customMessage?: CustomMessage;
     commands?: Commands;
     detailsExtra?: DetailsExtra;
+    autoTrade?: AutoTrade;
+    sniper?: Sniper;
 }
 
 /** old options that are migrated out of current JsonOptions
@@ -2462,7 +2494,6 @@ function replaceOldProperties(options: DeprecatedJsonOptions): boolean {
 
     //@ts-ignore
     if (options.bypass?.bannedPeople !== undefined) {
-
         //@ts-ignore
         const mptfCheckValue = options.bypass.bannedPeople?.checkMptfBanned;
 
@@ -2474,7 +2505,6 @@ function replaceOldProperties(options: DeprecatedJsonOptions): boolean {
                 checkMptfBanned: process.env.MPTF_API_KEY !== undefined ? mptfCheckValue : false // below v4.13.0 -> v4.13.1
             };
         }
-
 
         //@ts-ignore
         delete options.bypass.bannedPeople;

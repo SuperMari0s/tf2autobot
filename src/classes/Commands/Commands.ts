@@ -262,6 +262,10 @@ export default class Commands {
                 this.manager.refreshAutokeysCommand(steamID);
             } else if (command === 'refreshlist' && isAdmin) {
                 this.manager.refreshListingsCommand(steamID);
+            } else if (command === 'autotrade' && isAdmin) {
+                this.autoTradeCommand(steamID, message);
+            } else if (command === 'sniper' && isAdmin) {
+                this.sniperCommand(steamID, message);
             } else if (command === 'stats' && isAdmin) {
                 void this.status.statsCommand(steamID);
             } else if (command === 'statsdw' && isAdmin) {
@@ -1368,6 +1372,50 @@ export default class Commands {
             );
         }
         this.bot.sendMessage(steamID, Cart.stringify(steamID, true, prefix));
+    }
+
+    private autoTradeCommand(steamID: SteamID, message: string): void {
+        const parts = message.split(' ');
+        if (parts.length < 2) {
+            return this.bot.sendMessage(steamID, 'Usage: !autotrade <on/off>');
+        }
+
+        const enable = parts[1].toLowerCase() === 'on';
+        this.bot.options.autoTrade.enable = enable;
+        this.bot.autoTrade.start();
+
+        this.bot.sendMessage(steamID, `✅ AutoTrade is now ${enable ? 'enabled' : 'disabled'}.`);
+        this.opt.updateOptionsCommand(null, `!config autoTrade.enable=${enable}`);
+    }
+
+    private sniperCommand(steamID: SteamID, message: string): void {
+        const parts = message.split(' ');
+        if (parts.length < 2) {
+            return this.bot.sendMessage(steamID, 'Usage: !sniper <on/off/config>');
+        }
+
+        const subCommand = parts[1].toLowerCase();
+        if (subCommand === 'on' || subCommand === 'off') {
+            const enable = subCommand === 'on';
+            this.bot.options.sniper.enable = enable;
+            this.bot.autoTrade.start();
+            this.bot.sendMessage(steamID, `✅ Sniper is now ${enable ? 'enabled' : 'disabled'}.`);
+            this.opt.updateOptionsCommand(null, `!config sniper.enable=${enable}`);
+        } else if (subCommand === 'config') {
+            const paramString = message.substring(message.indexOf('config') + 6).trim();
+            if (!paramString) {
+                return this.bot.sendMessage(
+                    steamID,
+                    'Usage: !sniper config <params> (e.g. minProfit=0.5&items=["Keys"])'
+                );
+            }
+
+            const params = paramString.split('&');
+            const sniperParams = params.map(p => `sniper.${p}`).join('&');
+
+            this.opt.updateOptionsCommand(steamID, `!config ${sniperParams}`);
+            this.bot.autoTrade.start();
+        }
     }
 
     private buyBPTFPremiumCommand(steamID: SteamID, message: string): void {
