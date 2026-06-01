@@ -45,6 +45,10 @@ export default class AutoTrade {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0'
     ];
 
+    private isCheckingAutoTrade = false;
+
+    private isCheckingSniper = false;
+
     constructor(private readonly bot: Bot) {
         this.ws = new BptfWebSocket();
         this.ws.on('listing', (sku: string, listing: BptfListing) => {
@@ -89,7 +93,7 @@ export default class AutoTrade {
         }, interval);
     };
 
-    private handleWsListing(sku: string, listing: BptfListing): void {
+    private async handleWsListing(sku: string, listing: BptfListing): Promise<void> {
         const intent = listing.intent === 0 ? 'buy' : 'sell';
         const price = listing.price;
 
@@ -110,13 +114,33 @@ export default class AutoTrade {
             const now = Date.now();
             const pruned = filtered.filter(l => now - l.timestamp < 30 * 60 * 1000).slice(-20);
             this.buyOrderCache.set(sku, pruned);
+
+            // Instant AutoTrade check if we have this in stock
+            const inventory = this.bot.inventoryManager.getInventory;
+            const entry = this.bot.pricelist.getPrice({ priceKey: sku });
+            if (entry && entry.enabled && entry.intent !== 0) {
+                const amountInStock = inventory.getAmount({
+                    priceKey: sku,
+                    includeNonNormalized: false,
+                    tradableOnly: true
+                });
+                if (amountInStock > 0) {
+                    const keyPrice = this.bot.pricelist.getKeyPrice.metal;
+                    if (listing.isAutomatic && listing.price.toValue(keyPrice) >= entry.sell.toValue(keyPrice)) {
+                        if (listing.steamid !== this.bot.client.steamID.getSteamID64()) {
+                            log.info(`[AutoTrade] Instant match for ${entry.name} from stream!`);
+                            await this.sendOffer(listing.steamid, sku, 'selling', listing.price, listing.tradeOfferUrl);
+                        }
+                    }
+                }
+            }
         }
 
         // Sniper reaction
         if (this.bot.options.sniper.enable && intent === 'sell' && listing.isAutomatic) {
             const { items } = this.bot.options.sniper;
             if (items.some(i => i === sku || this.bot.schema.getSkuFromName(i) === sku)) {
-                void this.evaluateDeal(sku, listing);
+                await this.evaluateDeal(sku, listing);
             }
         }
     }
@@ -134,100 +158,120 @@ export default class AutoTrade {
         const profit = (suggestedSellValue - listingValue) / 9;
 
         if (profit >= (this.bot.options.sniper.minProfit || 0)) {
-            log.info(`[Sniper] Deal caught via stream for ${sku}: ${profit.toFixed(2)} ref profit!`);
+            log.info(`[Sniper] Deal caught for ${sku}: ${profit.toFixed(2)} ref profit!`);
             if (this.canAfford(listing.price)) {
                 await this.sendOffer(listing.steamid, sku, 'buying', listing.price, listing.tradeOfferUrl);
             }
         }
     }
 
-    private checkAutoTrade = async (): Promise<void> => {
-        if (this.bot.isHalted) return;
+    private async checkAutoTrade(): Promise<void> {
+        if (this.bot.isHalted || this.isCheckingAutoTrade) return;
+        this.isCheckingAutoTrade = true;
 
-        const inventory = this.bot.inventoryManager.getInventory;
-        const pricelist = this.bot.pricelist.getPrices;
+        try {
+            const inventory = this.bot.inventoryManager.getInventory;
+            const pricelist = this.bot.pricelist.getPrices;
 
-        const skusInStock = Object.keys(pricelist).filter(sku => {
-            const entry = pricelist[sku];
-            if (!entry.enabled || entry.intent === 0) return false;
-            return (
-                inventory.getAmount({
-                    priceKey: sku,
-                    includeNonNormalized: false,
-                    tradableOnly: true
-                }) > 0
-            );
-        });
+            const skusInStock = Object.keys(pricelist).filter(sku => {
+                const entry = pricelist[sku];
+                if (!entry.enabled || entry.intent === 0) return false;
+                return (
+                    inventory.getAmount({
+                        priceKey: sku,
+                        includeNonNormalized: false,
+                        tradableOnly: true
+                    }) > 0
+                );
+            });
 
-        if (skusInStock.length === 0) return;
+            if (skusInStock.length === 0) return;
 
-        log.debug(`Checking cache/scraping for ${skusInStock.length} items in stock...`);
+            log.debug(`Checking cache/scraping for ${skusInStock.length} items in stock...`);
 
-        for (const sku of skusInStock) {
-            if (this.bot.isHalted) break;
+            for (const sku of skusInStock) {
+                if (this.bot.isHalted) break;
 
-            const entry = pricelist[sku];
-            const cached = this.buyOrderCache.get(sku) || [];
-            let matched = false;
+                const entry = pricelist[sku];
+                const cached = this.buyOrderCache.get(sku) || [];
+                let matched = false;
 
-            // Try cache first
-            for (const listing of cached) {
-                const keyPrice = this.bot.pricelist.getKeyPrice.metal;
-                if (listing.isAutomatic && listing.price.toValue(keyPrice) >= entry.sell.toValue(keyPrice)) {
-                    if (listing.steamid === this.bot.client.steamID.getSteamID64()) continue;
-                    log.info(`[AutoTrade] Found matching buy order in cache for ${entry.name}`);
-                    await this.sendOffer(listing.steamid, sku, 'selling', listing.price, listing.tradeOfferUrl);
-                    matched = true;
-                    break;
-                }
-            }
-
-            if (!matched) {
-                // Low frequency fallback scraping
-                try {
-                    const listings = await this.scrapeClassifieds(sku);
-                    const buyOrders = listings.filter(l => l.intent === 'buy' && l.isAutomatic);
-                    for (const listing of buyOrders) {
+                // Try cache first
+                for (const listing of cached) {
+                    const keyPrice = this.bot.pricelist.getKeyPrice.metal;
+                    if (listing.isAutomatic && listing.price.toValue(keyPrice) >= entry.sell.toValue(keyPrice)) {
                         if (listing.steamid === this.bot.client.steamID.getSteamID64()) continue;
-                        const keyPrice = this.bot.pricelist.getKeyPrice.metal;
-                        if (listing.price.toValue(keyPrice) >= entry.sell.toValue(keyPrice)) {
-                            log.info(`[AutoTrade] Found matching buy order via scrape for ${entry.name}`);
-                            await this.sendOffer(listing.steamid, sku, 'selling', listing.price, listing.tradeOfferUrl);
-                            break;
-                        }
+                        log.info(`[AutoTrade] Found matching buy order in cache for ${entry.name}`);
+                        await this.sendOffer(listing.steamid, sku, 'selling', listing.price, listing.tradeOfferUrl);
+                        matched = true;
+                        break;
                     }
-                    const delay = Math.floor(Math.random() * 30000) + 30000; // 30-60s delay
-                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+
+                if (!matched) {
+                    // Fallback scraping with a very long delay to avoid bans
+                    try {
+                        const listings = await this.scrapeClassifieds(sku);
+                        const buyOrders = listings.filter(l => l.intent === 'buy' && l.isAutomatic);
+                        for (const listing of buyOrders) {
+                            if (listing.steamid === this.bot.client.steamID.getSteamID64()) continue;
+                            const keyPrice = this.bot.pricelist.getKeyPrice.metal;
+                            if (listing.price.toValue(keyPrice) >= entry.sell.toValue(keyPrice)) {
+                                log.info(`[AutoTrade] Found matching buy order via scrape for ${entry.name}`);
+                                await this.sendOffer(
+                                    listing.steamid,
+                                    sku,
+                                    'selling',
+                                    listing.price,
+                                    listing.tradeOfferUrl
+                                );
+                                break;
+                            }
+                        }
+                        // Long delay between scrapes
+                        const delay = Math.floor(Math.random() * 60000) + 60000; // 1-2 mins
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    } catch (err) {
+                        log.warn(`[AutoTrade] Scrape failed for ${sku}:`, (err as Error).message);
+                        await new Promise(resolve => setTimeout(resolve, 120000)); // Cool down longer on error
+                    }
+                }
+            }
+        } finally {
+            this.isCheckingAutoTrade = false;
+        }
+    }
+
+    private async checkSniper(): Promise<void> {
+        if (this.bot.isHalted || this.isCheckingSniper) return;
+        this.isCheckingSniper = true;
+
+        try {
+            const { items } = this.bot.options.sniper;
+            if (!items || items.length === 0) return;
+
+            log.debug(`Sniper: Periodically checking ${items.length} items for deals...`);
+            for (const itemQuery of items) {
+                if (this.bot.isHalted) break;
+                try {
+                    const sku = testPriceKey(itemQuery) ? itemQuery : this.bot.schema.getSkuFromName(itemQuery);
+                    if (sku.includes('null') || sku.includes('undefined')) continue;
+
+                    const listings = await this.scrapeClassifieds(sku);
+                    const sellOrders = listings.filter(l => l.intent === 'sell' && l.isAutomatic);
+                    for (const listing of sellOrders) {
+                        await this.evaluateDeal(sku, { ...listing, timestamp: Date.now() });
+                    }
+                    await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 60000) + 60000));
                 } catch (err) {
-                    log.error(`[AutoTrade] Scrape failed for ${sku}:`, (err as Error).message);
+                    log.warn(`[Sniper] Scrape failed for ${itemQuery}:`, (err as Error).message);
+                    await new Promise(resolve => setTimeout(resolve, 120000));
                 }
             }
+        } finally {
+            this.isCheckingSniper = false;
         }
-    };
-
-    private checkSniper = async (): Promise<void> => {
-        if (this.bot.isHalted) return;
-        const { items } = this.bot.options.sniper;
-        if (!items || items.length === 0) return;
-
-        log.debug(`Sniper: Checking ${items.length} items for deals...`);
-        for (const itemQuery of items) {
-            if (this.bot.isHalted) break;
-            try {
-                const sku = testPriceKey(itemQuery) ? itemQuery : this.bot.schema.getSkuFromName(itemQuery);
-                if (sku.includes('null') || sku.includes('undefined')) continue;
-
-                const listings = await this.scrapeClassifieds(sku);
-                const sellOrders = listings.filter(l => l.intent === 'sell' && l.isAutomatic);
-                for (const listing of sellOrders) {
-                    await this.evaluateDeal(sku, { ...listing, timestamp: Date.now() });
-                }
-                await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 20000) + 20000));
-            } catch (err) {
-                log.error(`[Sniper] Scrape failed for ${itemQuery}:`, (err as Error).message);
-            }
-        }
-    };
+    }
 
     private async scrapeClassifieds(sku: string): Promise<CachedListing[]> {
         const item = SKU.fromString(sku);
@@ -246,16 +290,14 @@ export default class AutoTrade {
                 'User-Agent': userAgent,
                 Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
+                Referer: 'https://backpack.tf/',
                 Connection: 'keep-alive',
                 'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
                 Pragma: 'no-cache',
                 'Cache-Control': 'no-cache'
             },
+            jar: this.bot.jar,
+            withCredentials: true,
             timeout: 20000
         });
 
@@ -340,9 +382,7 @@ export default class AutoTrade {
                         },
                         emitChange: false
                     })
-                    .catch(() => {
-                        // ignore
-                    });
+                    .catch(() => {});
             }
         }
 
@@ -365,8 +405,7 @@ export default class AutoTrade {
             await this.bot.trades.sendOffer(cart.getOffer);
             log.info(`Sent offer to ${partnerSteamID} for ${sku} (${intent})`);
         } catch (err) {
-            const error = err as Error;
-            log.error(`Failed to send offer to ${partnerSteamID}:`, error.message);
+            log.error(`Failed to send offer to ${partnerSteamID}:`, (err as Error).message);
         } finally {
             if (intent === 'buying') {
                 const suggestedValue = await this.bot.pricelist.getItemPrices(sku);
@@ -378,9 +417,7 @@ export default class AutoTrade {
                         entryData: entry.getJSON(),
                         emitChange: false
                     })
-                    .catch(() => {
-                        // ignore
-                    });
+                    .catch(() => {});
             }
         }
     }
@@ -413,8 +450,7 @@ export default class AutoTrade {
                     emitChange: true
                 })
                 .catch(err => {
-                    const error = err as Error;
-                    log.error(`Failed to update ${sku} to sell:`, error.message);
+                    log.error(`Failed to update ${sku} to sell:`, (err as Error).message);
                 });
             return;
         }
@@ -434,8 +470,7 @@ export default class AutoTrade {
                 emitChange: true
             })
             .catch(err => {
-                const error = err as Error;
-                log.error(`Failed to auto-add ${sku} to pricelist:`, error.message);
+                log.error(`Failed to auto-add ${sku} to pricelist:`, (err as Error).message);
             });
     }
 }

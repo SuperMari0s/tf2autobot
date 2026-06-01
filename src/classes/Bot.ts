@@ -1,3 +1,6 @@
+import { wrapper } from 'axios-cookiejar-support';
+import { CookieJar } from 'tough-cookie';
+import axios from 'axios';
 import SteamID from 'steamid';
 import SteamUser from 'steam-user';
 import { EResult, EPersonaState } from 'steam-user';
@@ -84,6 +87,8 @@ export default class Bot {
     readonly tf2gc: TF2GC;
 
     readonly handler: MyHandler;
+
+    readonly jar: CookieJar;
 
     readonly inventoryGetter: InventoryGetter;
 
@@ -182,6 +187,8 @@ export default class Bot {
         readonly priceSource: IPricer
     ) {
         this.botManager = botManager;
+        this.jar = new CookieJar();
+        wrapper(axios);
 
         this.client = new SteamUser();
         this.community = new SteamCommunity();
@@ -1269,6 +1276,9 @@ export default class Bot {
 
     setCookies(cookies: string[]): Promise<void> {
         this.community.setCookies(cookies);
+        cookies.forEach(cookie => {
+            void this.jar.setCookieSync(cookie, 'https://backpack.tf');
+        });
 
         if (this.isReady) {
             this.bptf.setCookies(cookies);
