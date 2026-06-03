@@ -29,6 +29,24 @@ interface CachedListing {
     timestamp: number;
 }
 
+interface BptfSearchResponse {
+    response: {
+        success: number;
+        message?: string;
+        results?: {
+            id: string;
+            steamid: string;
+            intent: number;
+            currencies: {
+                keys: number;
+                metal: number;
+            };
+            userAgent?: string;
+            tradeOfferUrl?: string;
+        }[];
+    };
+}
+
 export default class AutoTrade {
     private autoTradeTimeout: NodeJS.Timeout;
 
@@ -75,7 +93,7 @@ export default class AutoTrade {
 
         const interval = Math.floor(Math.random() * (maxInterval - minInterval + 1) + minInterval) * 60 * 1000;
         this.autoTradeTimeout = setTimeout(() => {
-            void this.checkAutoTrade().finally(() => {
+            void this.checkAutoTradeCycle().finally(() => {
                 this.planAutoTrade();
             });
         }, interval);
@@ -87,7 +105,7 @@ export default class AutoTrade {
 
         const interval = Math.floor(Math.random() * (maxInterval - minInterval + 1) + minInterval) * 60 * 1000;
         this.sniperTimeout = setTimeout(() => {
-            void this.checkSniper().finally(() => {
+            void this.checkSniperCycle().finally(() => {
                 this.planSniper();
             });
         }, interval);
@@ -165,7 +183,7 @@ export default class AutoTrade {
         }
     }
 
-    private async checkAutoTrade(): Promise<void> {
+    private async checkAutoTradeCycle(): Promise<void> {
         if (this.bot.isHalted || this.isCheckingAutoTrade) return;
         this.isCheckingAutoTrade = true;
 
@@ -211,13 +229,13 @@ export default class AutoTrade {
                 if (!matched) {
                     // Fallback scraping with a very long delay to avoid bans
                     try {
-                        const listings = await this.scrapeClassifieds(sku);
+                        const listings = await this.getClassifieds(sku);
                         const buyOrders = listings.filter(l => l.intent === 'buy' && l.isAutomatic);
                         for (const listing of buyOrders) {
                             if (listing.steamid === this.bot.client.steamID.getSteamID64()) continue;
                             const keyPrice = this.bot.pricelist.getKeyPrice.metal;
                             if (listing.price.toValue(keyPrice) >= entry.sell.toValue(keyPrice)) {
-                                log.info(`[AutoTrade] Found matching buy order via scrape for ${entry.name}`);
+                                log.info(`[AutoTrade] Found matching buy order via fetch for ${entry.name}`);
                                 await this.sendOffer(
                                     listing.steamid,
                                     sku,
@@ -228,11 +246,11 @@ export default class AutoTrade {
                                 break;
                             }
                         }
-                        // Long delay between scrapes
+                        // Long delay between fetches
                         const delay = Math.floor(Math.random() * 60000) + 60000; // 1-2 mins
                         await new Promise(resolve => setTimeout(resolve, delay));
                     } catch (err) {
-                        log.warn(`[AutoTrade] Scrape failed for ${sku}:`, (err as Error).message);
+                        log.warn(`[AutoTrade] Fetch failed for ${sku}:`, (err as Error).message);
                         await new Promise(resolve => setTimeout(resolve, 120000)); // Cool down longer on error
                     }
                 }
@@ -242,7 +260,7 @@ export default class AutoTrade {
         }
     }
 
-    private async checkSniper(): Promise<void> {
+    private async checkSniperCycle(): Promise<void> {
         if (this.bot.isHalted || this.isCheckingSniper) return;
         this.isCheckingSniper = true;
 
@@ -257,14 +275,14 @@ export default class AutoTrade {
                     const sku = testPriceKey(itemQuery) ? itemQuery : this.bot.schema.getSkuFromName(itemQuery);
                     if (sku.includes('null') || sku.includes('undefined')) continue;
 
-                    const listings = await this.scrapeClassifieds(sku);
+                    const listings = await this.getClassifieds(sku);
                     const sellOrders = listings.filter(l => l.intent === 'sell' && l.isAutomatic);
                     for (const listing of sellOrders) {
                         await this.evaluateDeal(sku, { ...listing, timestamp: Date.now() });
                     }
                     await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 60000) + 60000));
                 } catch (err) {
-                    log.warn(`[Sniper] Scrape failed for ${itemQuery}:`, (err as Error).message);
+                    log.warn(`[Sniper] Fetch failed for ${itemQuery}:`, (err as Error).message);
                     await new Promise(resolve => setTimeout(resolve, 120000));
                 }
             }
@@ -273,7 +291,48 @@ export default class AutoTrade {
         }
     }
 
-    private async scrapeClassifieds(sku: string): Promise<CachedListing[]> {
+    private async getClassifieds(sku: string): Promise<CachedListing[]> {
+        // Try official Search API first
+        if (this.bot.options.bptfApiKey) {
+            try {
+                const item = SKU.fromString(sku);
+                const itemName = this.bot.schema.getName(item, false);
+                const response = await axios.get<BptfSearchResponse>(
+                    'https://api.backpack.tf/api/classifieds/search/v1',
+                    {
+                        params: {
+                            key: this.bot.options.bptfApiKey,
+                            item: itemName,
+                            quality: item.quality,
+                            tradable: item.tradable ? 1 : 0,
+                            craftable: item.craftable ? 1 : 0,
+                            australium: item.australium ? 1 : 0,
+                            killstreak_tier: item.killstreak || 0,
+                            particle: item.effect || 0
+                        },
+                        timeout: 15000
+                    }
+                );
+
+                if (response.data.response.success && response.data.response.results) {
+                    return response.data.response.results.map(r => ({
+                        steamid: r.steamid,
+                        intent: r.intent === 0 ? 'buy' : 'sell',
+                        price: new Currencies(r.currencies),
+                        tradeOfferUrl: r.tradeOfferUrl,
+                        isAutomatic: r.userAgent !== undefined,
+                        timestamp: Date.now()
+                    }));
+                }
+            } catch (err) {
+                log.debug(
+                    `[AutoTrade] Search API failed for ${sku}, falling back to scraping:`,
+                    (err as Error).message
+                );
+            }
+        }
+
+        // Fallback to Scraping if API fails or not configured
         const item = SKU.fromString(sku);
         const itemName = this.bot.schema.getName(item, false);
 

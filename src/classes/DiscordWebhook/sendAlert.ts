@@ -46,8 +46,7 @@ type AlertType =
     | 'onBulkUpdatePartialPriced'
     | 'isPartialPriced'
     | 'unusualInvalidItems'
-    | 'failedToUpdateOldPrices'
-    | 'manual-confirmation';
+    | 'failedToUpdateOldPrices';
 
 export default function sendAlert(
     type: AlertType,
@@ -230,10 +229,6 @@ export default function sendAlert(
             `Failed to update old prices (probably because autoprice is set to true but item does not exist` +
             ` on the pricer source):\n\n${items.join('\n')}\n\nAll items above has been temporarily disabled.`;
         color = '16711680'; // red
-    } else if (type === 'manual-confirmation') {
-        title = 'Manual confirmation required';
-        description = msg;
-        color = '16776960'; // yellow
     } else {
         title = 'High Valued Items';
         description = `Someone is trying to take your **${items.join(', ')}** that is not in your pricelist.`;
