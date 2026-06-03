@@ -2277,6 +2277,52 @@ export const optionsSchema: jsonschema.Schema = {
             ],
             additionalProperties: false
         },
+        autoTrade: {
+            type: 'object',
+            properties: {
+                enable: {
+                    type: 'boolean'
+                },
+                minInterval: {
+                    type: 'number',
+                    minimum: 1
+                },
+                maxInterval: {
+                    type: 'number',
+                    minimum: 1
+                }
+            },
+            required: ['enable', 'minInterval', 'maxInterval'],
+            additionalProperties: false
+        },
+        sniper: {
+            type: 'object',
+            properties: {
+                enable: {
+                    type: 'boolean'
+                },
+                minInterval: {
+                    type: 'number',
+                    minimum: 1
+                },
+                maxInterval: {
+                    type: 'number',
+                    minimum: 1
+                },
+                minProfit: {
+                    type: 'number',
+                    minimum: 0
+                },
+                maxBudget: {
+                    type: 'number'
+                },
+                items: {
+                    $ref: '#/definitions/string-array'
+                }
+            },
+            required: ['enable', 'minInterval', 'maxInterval', 'minProfit', 'maxBudget', 'items'],
+            additionalProperties: false
+        },
         detailsExtra: {
             type: 'object',
             properties: {
@@ -2791,7 +2837,9 @@ export const optionsSchema: jsonschema.Schema = {
         'discordWebhook',
         'customMessage',
         'commands',
-        'detailsExtra'
+        'detailsExtra',
+        'autoTrade',
+        'sniper'
     ],
     additionalProperties: false
 };

@@ -1,3 +1,6 @@
+import { wrapper } from 'axios-cookiejar-support';
+import { CookieJar } from 'tough-cookie';
+import axios from 'axios';
 import SteamID from 'steamid';
 import SteamUser from 'steam-user';
 import { EResult, EPersonaState } from 'steam-user';
@@ -19,7 +22,6 @@ import path from 'path';
 import * as files from '../lib/files';
 import * as readline from 'readline';
 
-
 import jwt from 'jsonwebtoken';
 import DiscordBot from './DiscordBot';
 import { Message as DiscordMessage } from 'discord.js';
@@ -29,6 +31,7 @@ import Pricelist, { Entry, EntryData, PricesDataObject } from './Pricelist';
 import Friends from './Friends';
 import Trades from './Trades';
 import Listings from './Listings';
+import AutoTrade from './AutoTrade';
 import TF2GC from './TF2GC';
 import Inventory from './Inventory';
 import InventoryGetter from './InventoryGetter';
@@ -79,9 +82,13 @@ export default class Bot {
 
     readonly listings: Listings;
 
+    readonly autoTrade: AutoTrade;
+
     readonly tf2gc: TF2GC;
 
     readonly handler: MyHandler;
+
+    readonly jar: CookieJar;
 
     readonly inventoryGetter: InventoryGetter;
 
@@ -180,6 +187,8 @@ export default class Bot {
         readonly priceSource: IPricer
     ) {
         this.botManager = botManager;
+        this.jar = new CookieJar();
+        wrapper(axios);
 
         this.client = new SteamUser();
         this.community = new SteamCommunity();
@@ -201,6 +210,7 @@ export default class Bot {
         this.groups = new Groups(this);
         this.trades = new Trades(this);
         this.listings = new Listings(this);
+        this.autoTrade = new AutoTrade(this);
         this.tf2gc = new TF2GC(this);
 
         this.handler = new MyHandler(this, this.priceSource);
@@ -412,6 +422,8 @@ export default class Bot {
         // disable auto-check for missing/mismatching listings
         clearInterval(this.autoRefreshListingsInterval);
 
+        this.autoTrade.stop();
+
         log.debug('Removing all listings due to halt mode turned on');
         await this.listings.removeAll().catch((err: Error) => {
             log.warn('Failed to remove all listings on enabling halt mode: ', err);
@@ -439,6 +451,8 @@ export default class Bot {
 
         // Re-initialize auto-check for missing/mismatching listings
         this.startAutoRefreshListings();
+
+        this.autoTrade.start();
 
         return recrateListingsFailed;
     }
@@ -1214,6 +1228,7 @@ export default class Bot {
 
                     this.manager.pollInterval = 5 * 1000;
                     this.setReady = true;
+                    this.autoTrade.start();
                     this.handler.onReady();
                     this.manager.doPoll();
                     this.startVersionChecker();
@@ -1261,6 +1276,9 @@ export default class Bot {
 
     setCookies(cookies: string[]): Promise<void> {
         this.community.setCookies(cookies);
+        cookies.forEach(cookie => {
+            void this.jar.setCookieSync(cookie, 'https://backpack.tf');
+        });
 
         if (this.isReady) {
             this.bptf.setCookies(cookies);
@@ -1612,7 +1630,11 @@ export default class Bot {
         log.debug('Conf key needed');
 
         if (!this.options.steamIdentitySecret || this.options.steamIdentitySecret === 'X') {
-            return callback(new Error('Manual 2FA mode: No identity secret provided, skipping automatic confirmation.'), 0, '');
+            return callback(
+                new Error('Manual 2FA mode: No identity secret provided, skipping automatic confirmation.'),
+                0,
+                ''
+            );
         }
 
         void this.getTimeOffset.asCallback((err, offset) => {
@@ -1647,17 +1669,22 @@ export default class Bot {
             .then(async () => {
                 if (!this.options.steamSharedSecret || this.options.steamSharedSecret === 'X') {
                     // Manual input or Mobile Approval
-                    log.warn('A login confirmation has been sent to your Steam mobile app. Please approve it on your device.');
-                    return new Promise<string>((resolve) => {
+                    log.warn(
+                        'A login confirmation has been sent to your Steam mobile app. Please approve it on your device.'
+                    );
+                    return new Promise<string>(resolve => {
                         const rl = readline.createInterface({
                             input: process.stdin,
                             output: process.stdout
                         });
-                        
-                        rl.question('If you are using a code instead, enter it here (otherwise just approve on phone): ', (code) => {
-                            rl.close();
-                            resolve(code.trim());
-                        });
+
+                        rl.question(
+                            'If you are using a code instead, enter it here (otherwise just approve on phone): ',
+                            code => {
+                                rl.close();
+                                resolve(code.trim());
+                            }
+                        );
 
                         // Automatically close the prompt if the user approves on their phone
                         const onDone = () => {
